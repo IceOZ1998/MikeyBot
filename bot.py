@@ -150,6 +150,29 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     await update.message.reply_text(reply)
 
 
+async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not update.message or not update.message.voice:
+        return
+    chat_id = update.message.chat_id
+    try:
+        voice_file = await update.message.voice.get_file()
+        audio_bytes = await voice_file.download_as_bytearray()
+        _ensure_session(chat_id)
+        async with session_locks[chat_id]:
+            response = await asyncio.to_thread(
+                chat_sessions[chat_id].send_message,
+                [
+                    types.Part.from_bytes(data=bytes(audio_bytes), mime_type="audio/ogg"),
+                    "האזיני להודעה הקולית. הבן מה עלמה אומרת וענה לה בעברית כמו שהיית עונה להודעת טקסט.",
+                ],
+            )
+        reply = response.text
+    except Exception as exc:
+        logger.error("Voice error in chat %s: %s", chat_id, exc)
+        reply = "רגע אחד עלמה, אני חושב... נסי שוב עוד שנייה 😊"
+    await update.message.reply_text(reply)
+
+
 async def send_morning_message(app: Application) -> None:
     now = datetime.now(ISRAEL_TZ)
     day = _hebrew_day(now)
@@ -207,6 +230,7 @@ def main() -> None:
         .build()
     )
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    app.add_handler(MessageHandler(filters.VOICE, handle_voice))
     logger.info("מייקיבוט starting...")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
 
