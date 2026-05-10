@@ -10,6 +10,7 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from dotenv import load_dotenv
 from telegram import Update
 from telegram.ext import Application, ContextTypes, MessageHandler, filters
+from telegram.error import Conflict, NetworkError
 
 load_dotenv()
 
@@ -125,11 +126,27 @@ def _ensure_session(chat_id: int) -> None:
         session_locks[chat_id] = asyncio.Lock()
 
 
-async def _ask_gemini(chat_id: int, prompt: str) -> str:
+async def _ask_gemini(chat_id: int, prompt: str, retries: int = 3) -> str:
     _ensure_session(chat_id)
-    async with session_locks[chat_id]:
-        response = await asyncio.to_thread(chat_sessions[chat_id].send_message, prompt)
-    return response.text
+    last_exc = None
+    for attempt in range(retries):
+        try:
+            async with session_locks[chat_id]:
+                response = await asyncio.to_thread(
+                    chat_sessions[chat_id].send_message, prompt
+                )
+            return response.text
+        except Exception as exc:
+            last_exc = exc
+            err = str(exc)
+            if "429" in err or "RESOURCE_EXHAUSTED" in err:
+                wait = (attempt + 1) * 5
+                logger.warning("Rate limit hit, waiting %ss (attempt %s/%s)", wait, attempt + 1, retries)
+                await asyncio.sleep(wait)
+            else:
+                logger.error("Gemini error (attempt %s/%s): %s", attempt + 1, retries, exc)
+                await asyncio.sleep(2)
+    raise last_exc
 
 
 def _hebrew_day(dt: datetime) -> str:
@@ -145,8 +162,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     try:
         reply = await _ask_gemini(chat_id, text)
     except Exception as exc:
+        err = str(exc)
         logger.error("Gemini error in chat %s: %s", chat_id, exc)
-        reply = "רגע אחד עלמה, אני חושב... נסי שוב עוד שנייה 😊"
+        if "429" in err or "RESOURCE_EXHAUSTED" in err:
+            reply = "עלמה, יש לי הרבה מדי שאלות עכשיו 😅 נסי שוב בעוד דקה!"
+        else:
+            reply = "רגע אחד עלמה, אני חושב... נסי שוב עוד שנייה 😊"
     await update.message.reply_text(reply)
 
 
@@ -168,8 +189,12 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             )
         reply = response.text
     except Exception as exc:
+        err = str(exc)
         logger.error("Voice error in chat %s: %s", chat_id, exc)
-        reply = "רגע אחד עלמה, אני חושב... נסי שוב עוד שנייה 😊"
+        if "429" in err or "RESOURCE_EXHAUSTED" in err:
+            reply = "עלמה, יש לי הרבה מדי שאלות עכשיו 😅 נסי שוב בעוד דקה!"
+        else:
+            reply = "רגע אחד עלמה, אני חושב... נסי שוב עוד שנייה 😊"
     await update.message.reply_text(reply)
 
 
@@ -222,6 +247,17 @@ async def setup_scheduler(app: Application) -> None:
     logger.info("Scheduler started — morning 06:00, evening 20:00 (Israel time)")
 
 
+async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
+    exc = context.error
+    if isinstance(exc, Conflict):
+        logger.critical("CONFLICT: another bot instance is running! Shutting down.")
+        raise SystemExit(1)
+    if isinstance(exc, NetworkError):
+        logger.warning("Network error (will retry): %s", exc)
+        return
+    logger.error("Unhandled error: %s", exc)
+
+
 def main() -> None:
     app = (
         Application.builder()
@@ -231,6 +267,7 @@ def main() -> None:
     )
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     app.add_handler(MessageHandler(filters.VOICE, handle_voice))
+    app.add_error_handler(error_handler)
     logger.info("מייקיבוט starting...")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
 
