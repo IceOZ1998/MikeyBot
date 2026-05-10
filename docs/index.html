@@ -1,0 +1,446 @@
+<!DOCTYPE html>
+<html lang="he" dir="rtl">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <title>אימון קוגניטיבי — מייקיבוט</title>
+    <style>
+        :root {
+            --bg: #0d1117;
+            --surface: #161b22;
+            --primary: #58a6ff;
+            --success: #3fb950;
+            --error: #f85149;
+            --text: #e6edf3;
+            --muted: #8b949e;
+        }
+        * { box-sizing: border-box; margin: 0; padding: 0; -webkit-tap-highlight-color: transparent; }
+
+        body {
+            font-family: 'Segoe UI', Arial, sans-serif;
+            background: var(--bg);
+            color: var(--text);
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            padding: 24px 16px 48px;
+            font-size: 22px;
+            direction: rtl;
+        }
+
+        header { text-align: center; margin-bottom: 28px; }
+        header h1 { font-size: 2em; color: var(--primary); margin-bottom: 6px; }
+        header p  { color: var(--muted); font-size: 0.8em; }
+
+        #game { width: 100%; max-width: 560px; text-align: center; }
+
+        #exercise-title {
+            font-size: 1.3em;
+            color: var(--primary);
+            font-weight: bold;
+            margin-bottom: 16px;
+        }
+
+        .box {
+            background: var(--surface);
+            border: 1px solid #30363d;
+            border-radius: 18px;
+            padding: 18px 22px;
+            margin-bottom: 20px;
+            line-height: 1.6;
+        }
+
+        /* ── Buttons ── */
+        .emoji-btn {
+            width: 120px; height: 120px;
+            border-radius: 24px;
+            border: 4px solid #30363d;
+            background: var(--surface);
+            cursor: pointer;
+            font-size: 2.6em;
+            display: inline-flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            gap: 4px;
+            transition: transform .15s, border-color .15s, background .15s;
+            user-select: none;
+        }
+        .emoji-btn span { font-size: .38em; color: var(--muted); }
+        .emoji-btn:active  { transform: scale(.9); }
+        .emoji-btn.correct { border-color: var(--success); background: #1a3a24; }
+        .emoji-btn.wrong   { border-color: var(--error);   background: #3a1a1a; }
+
+        .num-btn {
+            width: 100px; height: 100px;
+            border-radius: 50%;
+            border: 4px solid #30363d;
+            background: var(--surface);
+            color: var(--text);
+            font-size: 1.9em; font-weight: bold;
+            cursor: pointer;
+            transition: all .15s;
+        }
+        .num-btn:active    { transform: scale(.9); }
+        .num-btn.correct   { background: var(--success); border-color: var(--success); color: #000; }
+        .num-btn.wrong     { background: var(--error);   border-color: var(--error);   color: #fff; }
+
+        /* ── Memory cards ── */
+        .mem-card {
+            width: 120px; height: 120px;
+            border-radius: 20px;
+            border: 4px solid #1f6feb;
+            background: #1f6feb22;
+            cursor: pointer;
+            font-size: 2.4em;
+            display: inline-flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            gap: 2px;
+            transition: all .3s;
+            user-select: none;
+            color: transparent;
+        }
+        .mem-card span { font-size: .37em; color: transparent; }
+        .mem-card::before { content: '?'; color: var(--primary); font-size: 1.2em; font-weight: bold; }
+        .mem-card.open { color: var(--text); background: var(--surface); border-color: #30363d; }
+        .mem-card.open::before { content: ''; }
+        .mem-card.open span    { color: var(--muted); }
+        .mem-card.matched      { border-color: var(--success); background: #1a3a24; color: var(--text); cursor: default; }
+        .mem-card.matched::before { content: ''; }
+        .mem-card.matched span { color: var(--muted); }
+        .mem-card.shake { animation: shake .4s; }
+        @keyframes shake { 0%,100%{transform:translateX(0)} 25%{transform:translateX(-10px)} 75%{transform:translateX(10px)} }
+
+        /* ── Sequence circles ── */
+        .seq-btn {
+            width: 110px; height: 110px;
+            border-radius: 50%;
+            border: 5px solid rgba(255,255,255,.1);
+            cursor: pointer;
+            filter: brightness(.4);
+            transition: filter .2s, transform .15s;
+        }
+        .seq-btn.lit   { filter: brightness(1.1); transform: scale(1.1); }
+        .seq-btn:active{ transform: scale(.9); }
+
+        /* ── Layout helpers ── */
+        .flex-wrap { display: flex; flex-wrap: wrap; justify-content: center; gap: 14px; margin: 18px 0; }
+        .grid2     { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; max-width: 280px; margin: 18px auto; }
+
+        /* ── Speaker button ── */
+        .speak-btn {
+            background: none; border: none;
+            font-size: 1.3em; cursor: pointer;
+            padding: 4px 8px; vertical-align: middle;
+            opacity: .8;
+        }
+        .speak-btn:hover { opacity: 1; }
+
+        /* ── Feedback & next ── */
+        #feedback { margin-top: 24px; min-height: 56px; font-size: 1.15em; font-weight: bold; }
+        .ok  { color: var(--success); }
+        .err { color: var(--error); }
+        .next-btn {
+            margin-top: 18px;
+            padding: 18px 44px;
+            font-size: 1em; font-weight: bold;
+            border-radius: 16px; border: none;
+            background: var(--primary); color: #000;
+            cursor: pointer; transition: transform .15s;
+        }
+        .next-btn:hover { transform: scale(1.04); }
+
+        .progress { color: var(--muted); font-size: .75em; margin-top: 12px; }
+    </style>
+</head>
+<body>
+
+<header>
+    <h1>🧠 אימון קוגניטיבי</h1>
+    <p>מייקיבוט — תרגול יומי לעלמה ❤️</p>
+</header>
+
+<div id="game">
+    <div id="exercise-title"></div>
+    <div id="game-area"></div>
+    <div id="feedback"></div>
+</div>
+
+<script>
+/* ═══════════════════════════════════════════════════════
+   SPEECH & AUDIO
+═══════════════════════════════════════════════════════ */
+const synth = window.speechSynthesis;
+function speak(text, rate = 0.82) {
+    synth.cancel();
+    const u = new SpeechSynthesisUtterance(text);
+    u.lang = 'he-IL'; u.rate = rate; u.pitch = 1.05;
+    synth.speak(u);
+}
+
+let _ctx;
+function audio() {
+    if (!_ctx) _ctx = new (window.AudioContext || window.webkitAudioContext)();
+    return _ctx;
+}
+function tone(freq, dur = .25, type = 'sine') {
+    try {
+        const ctx = audio(), o = ctx.createOscillator(), g = ctx.createGain();
+        o.connect(g); g.connect(ctx.destination);
+        o.type = type; o.frequency.value = freq;
+        g.gain.setValueAtTime(.28, ctx.currentTime);
+        g.gain.exponentialRampToValueAtTime(.001, ctx.currentTime + dur);
+        o.start(); o.stop(ctx.currentTime + dur);
+    } catch(e) {}
+}
+const playOk    = () => { tone(523,.12); setTimeout(()=>tone(659,.12),130); setTimeout(()=>tone(784,.28),260); };
+const playErr   = () => tone(180,.5,'sawtooth');
+const playClick = () => tone(440,.07);
+
+/* ═══════════════════════════════════════════════════════
+   ROUTER — תרגיל אחד ביום לפי יום בשבוע
+═══════════════════════════════════════════════════════ */
+const EX    = [memoryEx, countingEx, sequenceEx, oddOneOutEx];
+const NAMES = ['משחק זיכרון 🃏', 'ספירה 🔢', 'זכרי את הסדר 🌈', 'מה שונה? 🤔'];
+const day   = new Date().getDay() % EX.length;
+
+document.getElementById('exercise-title').textContent = NAMES[day];
+EX[day]();
+
+/* ── helpers ── */
+function area()     { return document.getElementById('game-area'); }
+function feedback() { return document.getElementById('feedback'); }
+
+function setFeedback(msg, ok) {
+    feedback().innerHTML =
+        `<span class="${ok ? 'ok' : 'err'}">${msg}</span>` +
+        (ok ? `<br><button class="next-btn" onclick="location.reload()">תרגיל נוסף ↩️</button>` : '');
+}
+
+/* ═══════════════════════════════════════════════════════
+   תרגיל 1 — זיכרון
+═══════════════════════════════════════════════════════ */
+function memoryEx() {
+    const pool = [
+        {e:'🍎',w:'תפוח'},{e:'🐱',w:'חתול'},{e:'🌸',w:'פרח'},
+        {e:'☀️',w:'שמש'},{e:'🏠',w:'בית'},{e:'🎵',w:'מוזיקה'},
+        {e:'🍕',w:'פיצה'},{e:'🐶',w:'כלב'},{e:'🌊',w:'ים'},
+        {e:'⭐',w:'כוכב'},
+    ];
+    const pairs = pool.sort(()=>Math.random()-.5).slice(0,4);
+    const cards = [
+        ...pairs.map(p=>({key:p.w, face:p.e, label:'', mate:p.w+'-t'})),
+        ...pairs.map(p=>({key:p.w+'-t', face:'📝', label:p.w, mate:p.w})),
+    ].sort(()=>Math.random()-.5);
+
+    speak('מצאי את הזוגות המתאימים. לחצי על קלף לגילוי.');
+
+    area().innerHTML = `
+        <div class="box">מצאי זוגות — אמוג'י ומילה שלו
+            <button class="speak-btn" onclick="speak('מצאי את הזוגות. לחצי על כל קלף')">🔊</button>
+        </div>
+        <div class="flex-wrap" id="mgrid"></div>
+        <div class="progress" id="mprog">0 / 4 זוגות</div>`;
+
+    let flipped=[], locked=false, matched=0;
+    const grid = document.getElementById('mgrid');
+
+    cards.forEach(c => {
+        const el = document.createElement('div');
+        el.className = 'mem-card';
+        el.dataset.key  = c.key;
+        el.dataset.mate = c.mate;
+        el.innerHTML = `${c.face}<span>${c.label}</span>`;
+        el.onclick = function() {
+            if (locked || el.classList.contains('open') || el.classList.contains('matched')) return;
+            playClick();
+            el.classList.add('open');
+            if (c.label) speak(c.label);
+            flipped.push(el);
+            if (flipped.length === 2) {
+                locked = true;
+                const [a, b] = flipped;
+                const ok = a.dataset.key === b.dataset.mate || b.dataset.key === a.dataset.mate;
+                setTimeout(() => {
+                    if (ok) {
+                        a.classList.add('matched'); b.classList.add('matched');
+                        matched++;
+                        tone(600,.2);
+                        speak(`כן! זוג ${matched}`);
+                        document.getElementById('mprog').textContent = `${matched} / 4 זוגות`;
+                        if (matched === 4) { playOk(); setTimeout(()=>{ speak('כל הכבוד! מצאת את כל הזוגות!'); setFeedback('🎉 כל הכבוד! מצאת את כל הזוגות!', true); }, 400); }
+                    } else {
+                        a.classList.add('shake'); b.classList.add('shake');
+                        playErr();
+                        setTimeout(()=>{ a.classList.remove('shake','open'); b.classList.remove('shake','open'); }, 600);
+                    }
+                    flipped=[]; locked=false;
+                }, 900);
+            }
+        };
+        grid.appendChild(el);
+    });
+}
+
+/* ═══════════════════════════════════════════════════════
+   תרגיל 2 — ספירה
+═══════════════════════════════════════════════════════ */
+function countingEx() {
+    const pool = ['🍎','🌟','🐱','🌺','🎈','🦋','🐶','🍓','🐸','🌙','🎁','🍦'];
+    const item  = pool[Math.floor(Math.random()*pool.length)];
+    const count = Math.floor(Math.random()*7)+3; // 3–9
+    const line  = Array(count).fill(item).join('  ');
+
+    const wrong = new Set([count]);
+    while (wrong.size < 4) {
+        const w = count + (Math.random()<.5?1:-1)*(Math.floor(Math.random()*3)+1);
+        if (w>0 && w<15) wrong.add(w);
+    }
+    const answers = [...wrong].sort(()=>Math.random()-.5);
+
+    speak('כמה יש כאן? סיפרי אותם ואז לחצי על המספר הנכון.');
+
+    area().innerHTML = `
+        <div class="box">כמה יש כאן? בחרי את המספר הנכון 🔢
+            <button class="speak-btn" onclick="speak('כמה יש כאן? סיפרי ובחרי מספר')">🔊</button>
+        </div>
+        <div style="font-size:2.8em;line-height:1.9;margin:16px 0;letter-spacing:8px">${line}</div>
+        <div class="flex-wrap">
+            ${answers.map(n=>`<button class="num-btn" onclick="chkCount(this,${n},${count})">${n}</button>`).join('')}
+        </div>`;
+}
+function chkCount(btn, chosen, correct) {
+    document.querySelectorAll('.num-btn').forEach(b=>b.onclick=null);
+    if (chosen===correct) {
+        btn.classList.add('correct');
+        playOk(); speak(`כן! יש ${correct}. כל הכבוד!`);
+        setFeedback(`✅ נכון! יש ${correct}`, true);
+    } else {
+        btn.classList.add('wrong');
+        document.querySelectorAll('.num-btn').forEach(b=>{ if(+b.textContent===correct) b.classList.add('correct'); });
+        playErr(); speak(`לא בדיוק. התשובה היא ${correct}`);
+        setFeedback(`התשובה הנכונה היא ${correct} 😊`, false);
+    }
+}
+
+/* ═══════════════════════════════════════════════════════
+   תרגיל 3 — סדרה
+═══════════════════════════════════════════════════════ */
+const COLORS = [
+    {bg:'#e74c3c', name:'אדום',  freq:262},
+    {bg:'#3498db', name:'כחול',  freq:330},
+    {bg:'#2ecc71', name:'ירוק',  freq:392},
+    {bg:'#f1c40f', name:'צהוב',  freq:523},
+];
+let seqList=[], seqPlayer=[], seqLevel=1, seqLocked=false;
+
+function sequenceEx() {
+    seqList=[]; seqPlayer=[]; seqLevel=1; seqLocked=false;
+    speak('שימי לב לסדר שהצבעים נדלקים. אחר כך לחצי עליהם באותו הסדר.');
+
+    area().innerHTML = `
+        <div class="box">שימי לב לסדר — אחר כך חזרי עליו 🌈
+            <button class="speak-btn" onclick="speak('שימי לב לסדר הצבעים ואחר כך חזרי עליו')">🔊</button>
+        </div>
+        <div class="flex-wrap" id="sbns">
+            ${COLORS.map((c,i)=>`<button class="seq-btn" id="sc${i}" style="background:${c.bg}" onclick="seqPress(${i})" title="${c.name}" disabled></button>`).join('')}
+        </div>
+        <div class="progress" id="slvl">שלב 1 — שימי לב...</div>`;
+
+    setTimeout(seqNext, 900);
+}
+
+function seqNext() {
+    seqPlayer=[]; seqLocked=true;
+    document.querySelectorAll('.seq-btn').forEach(b=>b.disabled=true);
+    seqList.push(Math.floor(Math.random()*4));
+    document.getElementById('slvl').textContent=`שלב ${seqLevel} — שימי לב...`;
+
+    seqList.forEach((idx, i) => {
+        setTimeout(()=>{
+            const btn=document.getElementById(`sc${idx}`);
+            btn.classList.add('lit');
+            tone(COLORS[idx].freq,.4);
+            setTimeout(()=>btn.classList.remove('lit'), 550);
+        }, 750*(i+1));
+    });
+
+    setTimeout(()=>{
+        seqLocked=false;
+        document.querySelectorAll('.seq-btn').forEach(b=>b.disabled=false);
+        document.getElementById('slvl').textContent='עכשיו תורך! 👆';
+        speak('עכשיו תורך');
+    }, 750*(seqList.length+1)+200);
+}
+
+function seqPress(idx) {
+    if (seqLocked) return;
+    playClick();
+    const btn=document.getElementById(`sc${idx}`);
+    btn.classList.add('lit'); tone(COLORS[idx].freq,.3);
+    setTimeout(()=>btn.classList.remove('lit'), 280);
+    seqPlayer.push(idx);
+    const pos=seqPlayer.length-1;
+    if (seqPlayer[pos]!==seqList[pos]) {
+        seqLocked=true; playErr(); speak('אוי! לא נכון. ננסה שוב');
+        document.getElementById('slvl').textContent='❌ לא נכון — מתחילים מחדש';
+        setTimeout(()=>{ seqList=[]; seqLevel=1; sequenceEx(); }, 1800);
+        return;
+    }
+    if (seqPlayer.length===seqList.length) {
+        seqLocked=true; seqLevel++;
+        if (seqLevel>5) { playOk(); speak('וואו! חמישה שלבים! את מדהימה!'); setFeedback('🌟 וואו! 5 שלבים! את מדהימה!', true); }
+        else {
+            tone(600,.2); speak(`כל הכבוד! שלב ${seqLevel}`);
+            document.getElementById('slvl').textContent=`✅ מעולה! שלב ${seqLevel}`;
+            setTimeout(seqNext, 1300);
+        }
+    }
+}
+
+/* ═══════════════════════════════════════════════════════
+   תרגיל 4 — מה שונה?
+═══════════════════════════════════════════════════════ */
+function oddOneOutEx() {
+    const groups = [
+        {items:['🍎','🍊','🍌','🐶'], names:['תפוח','תפוז','בננה','כלב'],   odd:3, why:'הכלב הוא חיה, לא פרי'},
+        {items:['🐱','🐶','🐸','🚗'], names:['חתול','כלב','צפרדע','מכונית'],odd:3, why:'המכונית אינה חיה'},
+        {items:['🌹','🌺','🌻','⚽'], names:['ורד','פרח','חמנייה','כדור'],   odd:3, why:'הכדור הוא לא פרח'},
+        {items:['✏️','📏','📚','🍕'], names:['עיפרון','סרגל','ספר','פיצה'],  odd:3, why:'הפיצה אינה ציוד לימוד'},
+        {items:['🚗','🚌','✈️','🍰'], names:['מכונית','אוטובוס','מטוס','עוגה'],odd:3,why:'העוגה אינה כלי תחבורה'},
+        {items:['☀️','🌙','⭐','🌊'], names:['שמש','ירח','כוכב','ים'],       odd:3, why:'הים אינו בשמיים'},
+        {items:['🎵','🎸','🎹','🏀'], names:['תו','גיטרה','פסנתר','כדורסל'], odd:3, why:'כדורסל הוא ספורט, לא מוזיקה'},
+    ];
+    const g=groups[Math.floor(Math.random()*groups.length)];
+    speak(`איזה פריט לא שייך לקבוצה? ${g.names.join(', ')}`);
+
+    area().innerHTML = `
+        <div class="box">איזה פריט לא שייך לקבוצה? 🤔
+            <button class="speak-btn" onclick="speak('${g.names.join(', ')}')">🔊</button>
+        </div>
+        <div class="grid2">
+            ${g.items.map((em,i)=>`
+                <button class="emoji-btn" onclick="chkOdd(this,${i},${g.odd},'${g.why}','${g.names[i]}')" title="${g.names[i]}">
+                    ${em}<span>${g.names[i]}</span>
+                </button>`).join('')}
+        </div>`;
+}
+function chkOdd(btn, chosen, correct, why, name) {
+    document.querySelectorAll('.emoji-btn').forEach(b=>b.onclick=null);
+    if (chosen===correct) {
+        btn.classList.add('correct');
+        playOk(); speak(`נכון מאוד! ${why}`);
+        setFeedback(`✅ נכון! ${why}`, true);
+    } else {
+        btn.classList.add('wrong');
+        document.querySelectorAll('.emoji-btn')[correct].classList.add('correct');
+        playErr(); speak(why);
+        setFeedback(`${why} 😊`, false);
+    }
+}
+</script>
+</body>
+</html>
