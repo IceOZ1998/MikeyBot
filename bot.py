@@ -1,16 +1,19 @@
 import asyncio
 import logging
 import os
+from contextlib import asynccontextmanager
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
+import uvicorn
+from fastapi import FastAPI, Request, Response
 from google import genai
 from google.genai import types
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from dotenv import load_dotenv
 from telegram import Update
 from telegram.ext import Application, ContextTypes, MessageHandler, filters
-from telegram.error import Conflict, NetworkError
+from telegram.error import NetworkError
 
 load_dotenv()
 
@@ -23,8 +26,10 @@ logger = logging.getLogger(__name__)
 TELEGRAM_TOKEN = os.environ["TELEGRAM_TOKEN"]
 GOOGLE_API_KEY = os.environ["GOOGLE_API_KEY"]
 GROUP_CHAT_ID = int(os.getenv("GROUP_CHAT_ID", "-5254931746"))
-GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-pro")
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash-lite")
 ISRAEL_TZ = ZoneInfo("Asia/Jerusalem")
+PORT = int(os.getenv("PORT", "8080"))
+WEBHOOK_URL = os.getenv("WEBHOOK_URL", "").rstrip("/")
 
 SYSTEM_PROMPT = """
 אתה מייקיבוט — החבר הכי טוב של עלמה בטלגרם.
@@ -141,7 +146,7 @@ async def _ask_gemini(chat_id: int, prompt: str, retries: int = 3) -> str:
             err = str(exc)
             if "429" in err or "RESOURCE_EXHAUSTED" in err:
                 wait = (attempt + 1) * 5
-                logger.warning("Rate limit hit, waiting %ss (attempt %s/%s)", wait, attempt + 1, retries)
+                logger.warning("Rate limit, waiting %ss (attempt %s/%s)", wait, attempt + 1, retries)
                 await asyncio.sleep(wait)
             else:
                 logger.error("Gemini error (attempt %s/%s): %s", attempt + 1, retries, exc)
@@ -201,15 +206,11 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 async def send_morning_message(app: Application) -> None:
     now = datetime.now(ISRAEL_TZ)
     day = _hebrew_day(now)
-    is_thursday = now.weekday() == 3
-    is_saturday = now.weekday() == 5
-
     extra = ""
-    if is_thursday:
-        extra = "היום יום חמישי — חובה לכלול כביסה (הכנסה + קיפול) בלוח הזמנים."
-    elif is_saturday:
-        extra = "היום שבת — צור לוח קצר ורגוע עם פחות משימות."
-
+    if now.weekday() == 3:
+        extra = "היום יום חמישי — חובה לכלול כביסה בלוח."
+    elif now.weekday() == 5:
+        extra = "היום שבת — לוח קצר ורגוע."
     prompt = (
         f"שלח הודעת בוקר לעלמה ליום {day}. {extra} "
         "כלול לוח זמנים מלא מ-6:00 עד 18:00 עם 3 ארוחות (7:00, 13:00, 18:00), "
@@ -218,7 +219,7 @@ async def send_morning_message(app: Application) -> None:
     try:
         reply = await _ask_gemini(GROUP_CHAT_ID, prompt)
         await app.bot.send_message(chat_id=GROUP_CHAT_ID, text=reply)
-        logger.info("Morning message sent successfully")
+        logger.info("Morning message sent")
     except Exception as exc:
         logger.error("Failed to send morning message: %s", exc)
 
@@ -229,48 +230,69 @@ async def send_evening_message(app: Application) -> None:
     prompt = (
         f"שלח הודעת ערב לעלמה — יום {day} מסתיים. "
         "כלול תיאור חיובי קצר של היום, הישג ספציפי אחד, ורעיון קטן למחר. "
-        "בדיוק לפי פורמט הודעת ערב המוגדר."
+        "לפי פורמט הודעת ערב המוגדר."
     )
     try:
         reply = await _ask_gemini(GROUP_CHAT_ID, prompt)
         await app.bot.send_message(chat_id=GROUP_CHAT_ID, text=reply)
-        logger.info("Evening message sent successfully")
+        logger.info("Evening message sent")
     except Exception as exc:
         logger.error("Failed to send evening message: %s", exc)
 
 
-async def setup_scheduler(app: Application) -> None:
+# ── Telegram Application ──────────────────────────────────────────────────────
+application = Application.builder().token(TELEGRAM_TOKEN).updater(None).build()
+application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+application.add_handler(MessageHandler(filters.VOICE, handle_voice))
+
+
+# ── FastAPI ───────────────────────────────────────────────────────────────────
+@asynccontextmanager
+async def lifespan(app_web: FastAPI):
+    # Start bot
+    await application.initialize()
+    await application.start()
+
+    # Register webhook with Telegram
+    if WEBHOOK_URL:
+        await application.bot.set_webhook(
+            url=f"{WEBHOOK_URL}/webhook",
+            allowed_updates=Update.ALL_TYPES,
+        )
+        logger.info("Webhook set: %s/webhook", WEBHOOK_URL)
+    else:
+        logger.warning("WEBHOOK_URL not set — webhook not registered")
+
+    # Start scheduler
     scheduler = AsyncIOScheduler(timezone=ISRAEL_TZ)
-    scheduler.add_job(send_morning_message, "cron", hour=6, minute=0, args=[app])
-    scheduler.add_job(send_evening_message, "cron", hour=20, minute=0, args=[app])
+    scheduler.add_job(send_morning_message, "cron", hour=6, minute=0, args=[application])
+    scheduler.add_job(send_evening_message, "cron", hour=20, minute=0, args=[application])
     scheduler.start()
     logger.info("Scheduler started — morning 06:00, evening 20:00 (Israel time)")
+    logger.info("מייקיבוט ready!")
+
+    yield
+
+    scheduler.shutdown()
+    await application.stop()
+    await application.shutdown()
 
 
-async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
-    exc = context.error
-    if isinstance(exc, Conflict):
-        logger.critical("CONFLICT: another bot instance is running! Shutting down.")
-        raise SystemExit(1)
-    if isinstance(exc, NetworkError):
-        logger.warning("Network error (will retry): %s", exc)
-        return
-    logger.error("Unhandled error: %s", exc)
+web = FastAPI(lifespan=lifespan)
 
 
-def main() -> None:
-    app = (
-        Application.builder()
-        .token(TELEGRAM_TOKEN)
-        .post_init(setup_scheduler)
-        .build()
-    )
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-    app.add_handler(MessageHandler(filters.VOICE, handle_voice))
-    app.add_error_handler(error_handler)
-    logger.info("מייקיבוט starting...")
-    app.run_polling(allowed_updates=Update.ALL_TYPES)
+@web.post("/webhook")
+async def webhook(request: Request) -> Response:
+    data = await request.json()
+    update = Update.de_json(data, application.bot)
+    await application.process_update(update)
+    return Response(status_code=200)
+
+
+@web.get("/health")
+async def health() -> dict:
+    return {"status": "ok", "bot": "מייקיבוט"}
 
 
 if __name__ == "__main__":
-    main()
+    uvicorn.run(web, host="0.0.0.0", port=PORT)
