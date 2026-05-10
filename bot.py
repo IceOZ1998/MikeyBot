@@ -23,10 +23,11 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-TELEGRAM_TOKEN = os.environ["TELEGRAM_TOKEN"]
-GOOGLE_API_KEY = os.environ["GOOGLE_API_KEY"]
-GROUP_CHAT_ID = int(os.getenv("GROUP_CHAT_ID", "-5254931746"))
-GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash-lite")
+TELEGRAM_TOKEN  = os.environ["TELEGRAM_TOKEN"]
+GOOGLE_API_KEY  = os.environ["GOOGLE_API_KEY"]
+GROUP_CHAT_ID   = int(os.getenv("GROUP_CHAT_ID", "-5254931746"))
+GEMINI_MODEL    = os.getenv("GEMINI_MODEL", "gemini-2.5-flash-lite")
+TRAINING_URL    = os.getenv("TRAINING_URL", "")
 ISRAEL_TZ = ZoneInfo("Asia/Jerusalem")
 PORT = int(os.getenv("PORT", "8080"))
 WEBHOOK_URL = os.getenv("WEBHOOK_URL", "").rstrip("/")
@@ -224,6 +225,26 @@ async def send_morning_message(app: Application) -> None:
         logger.error("Failed to send morning message: %s", exc)
 
 
+async def send_training_link(app: Application) -> None:
+    if not TRAINING_URL:
+        logger.warning("TRAINING_URL not set — skipping training message")
+        return
+    now = datetime.now(ISRAEL_TZ)
+    days = ["שני", "שלישי", "רביעי", "חמישי", "שישי", "שבת", "ראשון"]
+    exercises = ["משחק זיכרון 🃏", "ספירה 🔢", "זכרי את הסדר 🌈", "מה שונה? 🤔"]
+    ex = exercises[now.weekday() % len(exercises)]
+    text = (
+        f"🧠 הגיע הזמן לאימון קוגניטיבי!\n\n"
+        f"התרגיל של היום: {ex}\n\n"
+        f"👇 לחצי כאן להתחלה:\n{TRAINING_URL}"
+    )
+    try:
+        await app.bot.send_message(chat_id=GROUP_CHAT_ID, text=text)
+        logger.info("Training link sent")
+    except Exception as exc:
+        logger.error("Failed to send training link: %s", exc)
+
+
 async def send_evening_message(app: Application) -> None:
     now = datetime.now(ISRAEL_TZ)
     day = _hebrew_day(now)
@@ -265,7 +286,8 @@ async def lifespan(app_web: FastAPI):
 
     # Start scheduler
     scheduler = AsyncIOScheduler(timezone=ISRAEL_TZ)
-    scheduler.add_job(send_morning_message, "cron", hour=6, minute=0, args=[application])
+    scheduler.add_job(send_morning_message, "cron", hour=6,  minute=0, args=[application])
+    scheduler.add_job(send_training_link,   "cron", hour=18, minute=0, args=[application])
     scheduler.add_job(send_evening_message, "cron", hour=20, minute=0, args=[application])
     scheduler.start()
     logger.info("Scheduler started — morning 06:00, evening 20:00 (Israel time)")
