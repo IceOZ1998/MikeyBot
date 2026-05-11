@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import os
+import re
 from contextlib import asynccontextmanager
 from datetime import datetime
 from zoneinfo import ZoneInfo
@@ -120,7 +121,9 @@ _client = genai.Client(api_key=GOOGLE_API_KEY)
 _chat_config = types.GenerateContentConfig(system_instruction=SYSTEM_PROMPT)
 
 chat_sessions: dict[int, object] = {}
-session_locks: dict[int, asyncio.Lock] = {}
+
+# Lock גלובלי — מבטיח שרק קריאה אחת ל-Gemini רצה בכל רגע
+_gemini_lock = asyncio.Lock()
 
 
 def _ensure_session(chat_id: int) -> None:
@@ -129,15 +132,21 @@ def _ensure_session(chat_id: int) -> None:
             model=GEMINI_MODEL,
             config=_chat_config,
         )
-        session_locks[chat_id] = asyncio.Lock()
 
 
-async def _ask_gemini(chat_id: int, prompt: str, retries: int = 3) -> str:
+def _parse_retry_delay(err: str) -> int:
+    """מחלץ את זמן ההמתנה מהודעת השגיאה של Gemini (ברירת מחדל: 65 שניות)."""
+    m = re.search(r'retry[^0-9]*([0-9]+)', err, re.IGNORECASE)
+    return int(m.group(1)) + 5 if m else 65
+
+
+async def _ask_gemini(chat_id: int, prompt, retries: int = 4) -> str:
+    """שולח הודעה ל-Gemini עם retry חכם ו-lock גלובלי."""
     _ensure_session(chat_id)
     last_exc = None
     for attempt in range(retries):
         try:
-            async with session_locks[chat_id]:
+            async with _gemini_lock:
                 response = await asyncio.to_thread(
                     chat_sessions[chat_id].send_message, prompt
                 )
@@ -146,12 +155,12 @@ async def _ask_gemini(chat_id: int, prompt: str, retries: int = 3) -> str:
             last_exc = exc
             err = str(exc)
             if "429" in err or "RESOURCE_EXHAUSTED" in err:
-                wait = (attempt + 1) * 5
-                logger.warning("Rate limit, waiting %ss (attempt %s/%s)", wait, attempt + 1, retries)
+                wait = _parse_retry_delay(err)
+                logger.warning("Rate limit — ממתין %ss (ניסיון %d/%d)", wait, attempt + 1, retries)
                 await asyncio.sleep(wait)
             else:
-                logger.error("Gemini error (attempt %s/%s): %s", attempt + 1, retries, exc)
-                await asyncio.sleep(2)
+                logger.error("Gemini error (ניסיון %d/%d): %s", attempt + 1, retries, exc)
+                await asyncio.sleep(3)
     raise last_exc
 
 
@@ -184,16 +193,11 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     try:
         voice_file = await update.message.voice.get_file()
         audio_bytes = await voice_file.download_as_bytearray()
-        _ensure_session(chat_id)
-        async with session_locks[chat_id]:
-            response = await asyncio.to_thread(
-                chat_sessions[chat_id].send_message,
-                [
-                    types.Part.from_bytes(data=bytes(audio_bytes), mime_type="audio/ogg"),
-                    "האזיני להודעה הקולית. הבן מה עלמה אומרת וענה לה בעברית כמו שהיית עונה להודעת טקסט.",
-                ],
-            )
-        reply = response.text
+        prompt = [
+            types.Part.from_bytes(data=bytes(audio_bytes), mime_type="audio/ogg"),
+            "האזן להודעה הקולית. הבן מה עלמה אומרת וענה לה בעברית כמו שהיית עונה להודעת טקסט.",
+        ]
+        reply = await _ask_gemini(chat_id, prompt)
     except Exception as exc:
         err = str(exc)
         logger.error("Voice error in chat %s: %s", chat_id, exc)
