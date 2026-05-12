@@ -1,7 +1,6 @@
 import asyncio
 import logging
 import os
-import re
 from contextlib import asynccontextmanager
 from datetime import datetime
 from zoneinfo import ZoneInfo
@@ -28,7 +27,6 @@ TELEGRAM_TOKEN  = os.environ["TELEGRAM_TOKEN"]
 GOOGLE_API_KEY  = os.environ["GOOGLE_API_KEY"]
 GROUP_CHAT_ID   = int(os.getenv("GROUP_CHAT_ID", "-5254931746"))
 GEMINI_MODEL    = os.getenv("GEMINI_MODEL", "gemini-2.5-flash-lite")
-TRAINING_URL    = os.getenv("TRAINING_URL", "")
 ISRAEL_TZ = ZoneInfo("Asia/Jerusalem")
 PORT = int(os.getenv("PORT", "8080"))
 WEBHOOK_URL = os.getenv("WEBHOOK_URL", "").rstrip("/")
@@ -121,9 +119,7 @@ _client = genai.Client(api_key=GOOGLE_API_KEY)
 _chat_config = types.GenerateContentConfig(system_instruction=SYSTEM_PROMPT)
 
 chat_sessions: dict[int, object] = {}
-
-# Lock גלובלי — מבטיח שרק קריאה אחת ל-Gemini רצה בכל רגע
-_gemini_lock = asyncio.Lock()
+session_locks: dict[int, asyncio.Lock] = {}
 
 
 def _ensure_session(chat_id: int) -> None:
@@ -132,36 +128,35 @@ def _ensure_session(chat_id: int) -> None:
             model=GEMINI_MODEL,
             config=_chat_config,
         )
+        session_locks[chat_id] = asyncio.Lock()
 
 
-def _parse_retry_delay(err: str) -> int:
-    """מחלץ את זמן ההמתנה מהודעת השגיאה של Gemini (ברירת מחדל: 65 שניות)."""
-    m = re.search(r'retry[^0-9]*([0-9]+)', err, re.IGNORECASE)
-    return int(m.group(1)) + 5 if m else 65
-
-
-async def _ask_gemini(chat_id: int, prompt, retries: int = 4) -> str:
-    """שולח הודעה ל-Gemini עם retry חכם ו-lock גלובלי."""
+async def _ask_gemini(chat_id: int, prompt) -> str:
+    """שולח הודעה ל-Gemini. על 429 — נכשל מיד (ללא המתנה). על שגיאה אחרת — ניסיון חוזר אחד."""
     _ensure_session(chat_id)
-    last_exc = None
-    for attempt in range(retries):
+    async with session_locks[chat_id]:
         try:
-            async with _gemini_lock:
-                response = await asyncio.to_thread(
-                    chat_sessions[chat_id].send_message, prompt
-                )
+            response = await asyncio.wait_for(
+                asyncio.to_thread(chat_sessions[chat_id].send_message, prompt),
+                timeout=25.0,
+            )
             return response.text
+        except asyncio.TimeoutError:
+            logger.error("Gemini timeout for chat %s", chat_id)
+            raise
         except Exception as exc:
-            last_exc = exc
             err = str(exc)
             if "429" in err or "RESOURCE_EXHAUSTED" in err:
-                wait = _parse_retry_delay(err)
-                logger.warning("Rate limit — ממתין %ss (ניסיון %d/%d)", wait, attempt + 1, retries)
-                await asyncio.sleep(wait)
-            else:
-                logger.error("Gemini error (ניסיון %d/%d): %s", attempt + 1, retries, exc)
-                await asyncio.sleep(3)
-    raise last_exc
+                logger.warning("Rate limit hit for chat %s", chat_id)
+                raise  # נכשל מיד — אין המתנה של דקה
+            # שגיאה אחרת — ניסיון חוזר אחד אחרי 2 שניות
+            logger.warning("Gemini error, retrying once: %s", exc)
+            await asyncio.sleep(2)
+            response = await asyncio.wait_for(
+                asyncio.to_thread(chat_sessions[chat_id].send_message, prompt),
+                timeout=25.0,
+            )
+            return response.text
 
 
 def _hebrew_day(dt: datetime) -> str:
@@ -229,25 +224,6 @@ async def send_morning_message(app: Application) -> None:
         logger.error("Failed to send morning message: %s", exc)
 
 
-async def send_training_link(app: Application) -> None:
-    if not TRAINING_URL:
-        logger.warning("TRAINING_URL not set — skipping training message")
-        return
-    now = datetime.now(ISRAEL_TZ)
-    days = ["שני", "שלישי", "רביעי", "חמישי", "שישי", "שבת", "ראשון"]
-    exercises = ["משחק זיכרון 🃏", "ספירה 🔢", "זכרי את הסדר 🌈", "מה שונה? 🤔"]
-    ex = exercises[now.weekday() % len(exercises)]
-    text = (
-        f"🧠 הגיע הזמן לאימון קוגניטיבי!\n\n"
-        f"התרגיל של היום: {ex}\n\n"
-        f"👇 לחצי כאן להתחלה:\n{TRAINING_URL}"
-    )
-    try:
-        await app.bot.send_message(chat_id=GROUP_CHAT_ID, text=text)
-        logger.info("Training link sent")
-    except Exception as exc:
-        logger.error("Failed to send training link: %s", exc)
-
 
 async def send_evening_message(app: Application) -> None:
     now = datetime.now(ISRAEL_TZ)
@@ -291,7 +267,6 @@ async def lifespan(app_web: FastAPI):
     # Start scheduler
     scheduler = AsyncIOScheduler(timezone=ISRAEL_TZ)
     scheduler.add_job(send_morning_message, "cron", hour=6,  minute=0, args=[application])
-    scheduler.add_job(send_training_link,   "cron", hour=18, minute=0, args=[application])
     scheduler.add_job(send_evening_message, "cron", hour=20, minute=0, args=[application])
     scheduler.start()
     logger.info("Scheduler started — morning 06:00, evening 20:00 (Israel time)")
