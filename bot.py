@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import os
+import time
 from contextlib import asynccontextmanager
 from datetime import datetime
 from zoneinfo import ZoneInfo
@@ -119,7 +120,13 @@ _client = genai.Client(api_key=GOOGLE_API_KEY)
 _chat_config = types.GenerateContentConfig(system_instruction=SYSTEM_PROMPT)
 
 chat_sessions: dict[int, object] = {}
-session_locks: dict[int, asyncio.Lock] = {}
+
+# ── Gemini rate limiter ───────────────────────────────────────────────────────
+# Free tier: 15 RPM → one request every 4 s.  All calls share one gate so
+# requests queue up instead of hammering the API and getting 429s.
+_gemini_gate = asyncio.Lock()
+_last_gemini_ts: float = 0.0
+_GEMINI_MIN_GAP = 4.5   # seconds between requests (60 / 15 + margin)
 
 
 def _ensure_session(chat_id: int) -> None:
@@ -128,35 +135,49 @@ def _ensure_session(chat_id: int) -> None:
             model=GEMINI_MODEL,
             config=_chat_config,
         )
-        session_locks[chat_id] = asyncio.Lock()
 
 
 async def _ask_gemini(chat_id: int, prompt) -> str:
-    """שולח הודעה ל-Gemini. על 429 — נכשל מיד (ללא המתנה). על שגיאה אחרת — ניסיון חוזר אחד."""
+    """שולח הודעה ל-Gemini עם rate limiting ו-retry אוטומטי.
+
+    * מגביל קצב: מרווח מינימלי של 4.5 שניות בין בקשות (15 RPM free tier).
+    * על 429: ממתין 65 שניות ומנסה שוב — עלמה מקבלת תשובה, לא הודעת שגיאה.
+    * על שגיאה אחרת: ניסיון חוזר אחד אחרי 3 שניות.
+    """
+    global _last_gemini_ts
     _ensure_session(chat_id)
-    async with session_locks[chat_id]:
-        try:
-            response = await asyncio.wait_for(
-                asyncio.to_thread(chat_sessions[chat_id].send_message, prompt),
-                timeout=25.0,
-            )
-            return response.text
-        except asyncio.TimeoutError:
-            logger.error("Gemini timeout for chat %s", chat_id)
-            raise
-        except Exception as exc:
-            err = str(exc)
-            if "429" in err or "RESOURCE_EXHAUSTED" in err:
-                logger.warning("Rate limit hit for chat %s", chat_id)
-                raise  # נכשל מיד — אין המתנה של דקה
-            # שגיאה אחרת — ניסיון חוזר אחד אחרי 2 שניות
-            logger.warning("Gemini error, retrying once: %s", exc)
-            await asyncio.sleep(2)
-            response = await asyncio.wait_for(
-                asyncio.to_thread(chat_sessions[chat_id].send_message, prompt),
-                timeout=25.0,
-            )
-            return response.text
+
+    async with _gemini_gate:
+        # Throttle: enforce minimum gap between API calls
+        gap = _GEMINI_MIN_GAP - (time.monotonic() - _last_gemini_ts)
+        if gap > 0:
+            await asyncio.sleep(gap)
+
+        for attempt in range(2):
+            try:
+                _last_gemini_ts = time.monotonic()
+                response = await asyncio.wait_for(
+                    asyncio.to_thread(chat_sessions[chat_id].send_message, prompt),
+                    timeout=30.0,
+                )
+                return response.text
+            except asyncio.TimeoutError:
+                logger.error("Gemini timeout (chat %s)", chat_id)
+                raise
+            except Exception as exc:
+                err = str(exc)
+                if "429" in err or "RESOURCE_EXHAUSTED" in err:
+                    if attempt == 0:
+                        logger.warning("429 rate limit (chat %s) — waiting 65 s then retrying", chat_id)
+                        await asyncio.sleep(65)
+                        continue
+                    logger.error("429 persists after retry (chat %s)", chat_id)
+                    raise
+                if attempt == 0:
+                    logger.warning("Gemini error, retrying in 3 s: %s", exc)
+                    await asyncio.sleep(3)
+                    continue
+                raise
 
 
 def _hebrew_day(dt: datetime) -> str:
@@ -172,12 +193,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     try:
         reply = await _ask_gemini(chat_id, text)
     except Exception as exc:
-        err = str(exc)
         logger.error("Gemini error in chat %s: %s", chat_id, exc)
-        if "429" in err or "RESOURCE_EXHAUSTED" in err:
-            reply = "עלמה, יש לי הרבה מדי שאלות עכשיו 😅 נסי שוב בעוד דקה!"
-        else:
-            reply = "רגע אחד עלמה, אני חושב... נסי שוב עוד שנייה 😊"
+        reply = "אוי, משהו השתבש אצלי 😊 נסי שוב עוד רגע!"
     await update.message.reply_text(reply)
 
 
@@ -194,12 +211,8 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         ]
         reply = await _ask_gemini(chat_id, prompt)
     except Exception as exc:
-        err = str(exc)
         logger.error("Voice error in chat %s: %s", chat_id, exc)
-        if "429" in err or "RESOURCE_EXHAUSTED" in err:
-            reply = "עלמה, יש לי הרבה מדי שאלות עכשיו 😅 נסי שוב בעוד דקה!"
-        else:
-            reply = "רגע אחד עלמה, אני חושב... נסי שוב עוד שנייה 😊"
+        reply = "אוי, משהו השתבש אצלי 😊 נסי שוב עוד רגע!"
     await update.message.reply_text(reply)
 
 
