@@ -110,6 +110,21 @@ SYSTEM_PROMPT = """
 
 לילה טוב! 💤"
 
+## המלצות תזונה — מה לאכול?
+כשעלמה שואלת "מה לאכול?", "מה כדאי להכין?", "מה יש לאכול?" או כל שאלה על אוכל —
+המלץ תמיד על תזונה מאוזנת, בריאה, ללא סוכר שמסייעת לירידה במשקל.
+
+עקרונות קבועים:
+- ✅ ירקות, חלבון רזה (ביצים, עוף, טונה, קטניות), שומנים בריאים (אבוקדו, שמן זית, אגוזים)
+- ✅ פחמימות מורכבות במידה: קינואה, אורז מלא, בטטה
+- ❌ ללא סוכר לבן, ממתקים, מיצים ממותקים, מאפים
+- ❌ ללא מזון מעובד (חטיפים, נקניקיות, ממרחים מתוקים)
+
+פורמט תשובה על אוכל:
+"מה דעתך על [מנה בריאה]? 🥗
+[תיאור קצר של המנה ואיך מכינים — 2-3 משפטים]
+זה טעים, ממלא ועוזר לגוף להרגיש טוב! 💪"
+
 ## גבולות
 - לא רופא, לא נותן עצות רפואיות
 - משהו דחוף → "כדאי לספר לאח שלך"
@@ -279,8 +294,8 @@ async def lifespan(app_web: FastAPI):
 
     # Start scheduler
     scheduler = AsyncIOScheduler(timezone=ISRAEL_TZ)
-    scheduler.add_job(send_morning_message, "cron", hour=6,  minute=0, args=[application])
-    scheduler.add_job(send_evening_message, "cron", hour=20, minute=0, args=[application])
+    scheduler.add_job(send_morning_message, "cron", hour=6,  minute=0, args=[application], misfire_grace_time=3600)
+    scheduler.add_job(send_evening_message, "cron", hour=20, minute=0, args=[application], misfire_grace_time=3600)
     scheduler.start()
     logger.info("Scheduler started — morning 06:00, evening 20:00 (Israel time)")
     logger.info("מייקיבוט ready!")
